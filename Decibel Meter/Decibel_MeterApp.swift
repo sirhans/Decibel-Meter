@@ -21,10 +21,13 @@ struct Decibel_MeterApp: App {
 
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let meterState = MeterState()
+    private var audioInputMeter: AudioInputMeter?
     private var panel: NSPanel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        createClockPanel()
+        createMeterPanel()
+        startAudioInput()
 
         NotificationCenter.default.addObserver(
             self,
@@ -32,22 +35,57 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(systemWillSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(systemDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        audioInputMeter?.stop()
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     @objc private func screenParametersDidChange() {
         positionPanel()
     }
 
-    private func createClockPanel() {
-        let contentView = NSHostingView(rootView: ContentView())
+    @objc private func systemWillSleep() {
+        audioInputMeter?.pauseForSleep()
+    }
+
+    @objc private func systemDidWake() {
+        audioInputMeter?.restartAfterWake()
+    }
+
+    private func startAudioInput() {
+        let audioInputMeter = AudioInputMeter(state: meterState)
+        self.audioInputMeter = audioInputMeter
+
+        Task {
+            await audioInputMeter.start()
+        }
+    }
+
+    private func createMeterPanel() {
+        let contentView = NSHostingView(
+            rootView: ContentView(meterState: meterState) {
+                NSApp.terminate(nil)
+            }
+        )
         contentView.translatesAutoresizingMaskIntoConstraints = false
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 240, height: 80),
+            contentRect: NSRect(x: 0, y: 0, width: 234, height: 88),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -58,7 +96,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
-        panel.ignoresMouseEvents = true
+        panel.ignoresMouseEvents = false
+        panel.isMovableByWindowBackground = true
         panel.level = .screenSaver
         panel.collectionBehavior = [
             .canJoinAllSpaces,
@@ -75,10 +114,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private func positionPanel() {
         guard let panel else { return }
 
-        let contentSize = panel.contentView?.fittingSize ?? CGSize(width: 240, height: 80)
+        let contentSize = panel.contentView?.fittingSize ?? CGSize(width: 234, height: 88)
         let targetSize = CGSize(
-            width: max(contentSize.width, 220),
-            height: max(contentSize.height, 64)
+            width: max(contentSize.width, 234),
+            height: max(contentSize.height, 88)
         )
 
         if let screen = NSScreen.main {
