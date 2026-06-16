@@ -61,6 +61,7 @@ done
 
 tag="v$version"
 zip_path="$BUILD_DIR/$APP_NAME-$tag.zip"
+tag_exists=false
 
 if [[ ! -f "$EXPORT_OPTIONS" ]]; then
     echo "Missing $EXPORT_OPTIONS" >&2
@@ -74,6 +75,7 @@ if [[ -n "$(git status --short)" ]]; then
 fi
 
 if git rev-parse "$tag" >/dev/null 2>&1; then
+    tag_exists=true
     tag_commit="$(git rev-list -n 1 "$tag")"
     head_commit="$(git rev-parse HEAD)"
     if [[ "$tag_commit" != "$head_commit" ]]; then
@@ -81,8 +83,6 @@ if git rev-parse "$tag" >/dev/null 2>&1; then
         echo "Use a new version number or intentionally move the tag yourself." >&2
         exit 1
     fi
-else
-    git tag -a "$tag" -m "$APP_NAME $version"
 fi
 
 rm -rf "$BUILD_DIR"
@@ -116,6 +116,10 @@ if [[ -n "$notary_profile" ]]; then
 fi
 
 ditto -c -k --keepParent "$APP_PATH" "$zip_path"
+
+if [[ "$tag_exists" == false ]]; then
+    git tag -a "$tag" -m "$APP_NAME $version"
+fi
 
 if [[ "$upload_github" == true ]]; then
     if ! command -v gh >/dev/null 2>&1; then
