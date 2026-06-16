@@ -10,6 +10,7 @@ BUILD_DIR="build/release"
 ARCHIVE_PATH="$BUILD_DIR/$APP_NAME.xcarchive"
 EXPORT_PATH="$BUILD_DIR/export"
 APP_PATH="$EXPORT_PATH/$APP_NAME.app"
+DERIVED_DATA_PATH="$BUILD_DIR/DerivedData"
 
 usage() {
     cat <<USAGE
@@ -92,11 +93,14 @@ xcodebuild archive \
     -project "$PROJECT" \
     -scheme "$SCHEME" \
     -configuration "$CONFIGURATION" \
+    -destination "generic/platform=macOS" \
+    -derivedDataPath "$DERIVED_DATA_PATH" \
     -archivePath "$ARCHIVE_PATH"
 
 xcodebuild -exportArchive \
     -archivePath "$ARCHIVE_PATH" \
     -exportPath "$EXPORT_PATH" \
+    -derivedDataPath "$DERIVED_DATA_PATH" \
     -exportOptionsPlist "$EXPORT_OPTIONS"
 
 if [[ ! -d "$APP_PATH" ]]; then
