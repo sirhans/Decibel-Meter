@@ -15,17 +15,35 @@ DERIVED_DATA_PATH="$BUILD_DIR/DerivedData"
 usage() {
     cat <<USAGE
 Usage:
-  scripts/release.sh VERSION [--notary-profile KEYCHAIN_PROFILE] [--github]
+  scripts/release.sh VERSION|next [--notary-profile KEYCHAIN_PROFILE] [--github] [--notes-file FILE]
 
 Examples:
   scripts/release.sh 0.1.0
+  scripts/release.sh next
   scripts/release.sh 0.1.0 --notary-profile notarytool-password
-  scripts/release.sh 0.1.0 --notary-profile notarytool-password --github
+  scripts/release.sh next --notary-profile notarytool-password --github
 
 The script archives the macOS app, exports a Developer ID build, optionally
 submits it to Apple's notary service, staples the ticket, creates a zip, and
 optionally uploads it to the matching GitHub release tag.
 USAGE
+}
+
+latest_version_tag() {
+    git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1
+}
+
+next_patch_version() {
+    local latest_tag major minor patch
+    latest_tag="$(latest_version_tag)"
+    if [[ -z "$latest_tag" ]]; then
+        echo "0.1.0"
+        return
+    fi
+
+    latest_tag="${latest_tag#v}"
+    IFS=. read -r major minor patch <<< "$latest_tag"
+    echo "$major.$minor.$((patch + 1))"
 }
 
 version="${1:-}"
@@ -37,6 +55,7 @@ shift
 
 notary_profile=""
 upload_github=false
+notes_file=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -52,6 +71,14 @@ while [[ $# -gt 0 ]]; do
             upload_github=true
             shift
             ;;
+        --notes-file)
+            notes_file="${2:-}"
+            if [[ -z "$notes_file" ]]; then
+                echo "Missing value for --notes-file" >&2
+                exit 1
+            fi
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1" >&2
             usage
@@ -60,9 +87,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ "$version" == "next" ]]; then
+    version="$(next_patch_version)"
+fi
+
 tag="v$version"
 zip_path="$BUILD_DIR/$APP_NAME-$tag.zip"
 tag_exists=false
+generated_notes_file="$BUILD_DIR/RELEASE_NOTES-$tag.md"
 
 if [[ ! -f "$EXPORT_OPTIONS" ]]; then
     echo "Missing $EXPORT_OPTIONS" >&2
@@ -133,12 +165,26 @@ if [[ "$upload_github" == true ]]; then
 
     git push origin "$tag"
 
+    if [[ -z "$notes_file" ]]; then
+        previous_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -v "^$tag$" | head -n 1)"
+        {
+            echo "Release $version"
+            echo
+            if [[ -n "$previous_tag" ]]; then
+                git log --pretty='- %s' "$previous_tag..HEAD"
+            else
+                git log --pretty='- %s' HEAD
+            fi
+        } > "$generated_notes_file"
+        notes_file="$generated_notes_file"
+    fi
+
     if gh release view "$tag" >/dev/null 2>&1; then
         gh release upload "$tag" "$zip_path" --clobber
     else
         gh release create "$tag" "$zip_path" \
             --title "$APP_NAME $version" \
-            --notes "Initial release."
+            --notes-file "$notes_file"
     fi
 fi
 
