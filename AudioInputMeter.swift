@@ -8,18 +8,20 @@
 import AVFAudio
 import Foundation
 
+@MainActor
 final class AudioInputMeter {
     private enum AudioInputError: Error {
         case inputFormatUnavailable
     }
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private let state: MeterState
     private let calibrationOffsetDecibels: Float = 95
     private let inputStallTimeout: TimeInterval = 5
     private var dsp: DecibelMeterDSP?
     private var monoBuffer = [Float]()
     private var hasPrimedDSP = false
+    private var hasInstalledTap = false
     private var lastBufferTime = Date()
     private var configurationObserver: NSObjectProtocol?
     private var healthCheckTimer: Timer?
@@ -30,10 +32,12 @@ final class AudioInputMeter {
         self.state = state
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
-            object: engine,
+            object: nil,
             queue: .main
-        ) { [weak self] _ in
-            self?.scheduleRestart(reason: "Audio changed")
+        ) { _ in
+            Task { @MainActor [weak self] in
+                self?.scheduleRestart(reason: "Audio changed")
+            }
         }
     }
 
@@ -43,7 +47,6 @@ final class AudioInputMeter {
         }
         pendingRestartWorkItem?.cancel()
         healthCheckTimer?.invalidate()
-        stopEngine()
     }
 
     func start() async {
@@ -79,6 +82,9 @@ final class AudioInputMeter {
     }
 
     private func startEngine() throws {
+        stopEngine()
+        engine = AVAudioEngine()
+
         let inputNode = engine.inputNode
         try inputNode.setVoiceProcessingEnabled(false)
 
@@ -92,19 +98,26 @@ final class AudioInputMeter {
         hasPrimedDSP = false
         lastBufferTime = Date()
 
-        inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            self?.process(buffer: buffer)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+            Task { @MainActor in
+                self?.process(buffer: buffer)
+            }
         }
+        hasInstalledTap = true
 
         engine.prepare()
         try engine.start()
     }
 
     private func stopEngine() {
-        engine.inputNode.removeTap(onBus: 0)
+        if hasInstalledTap {
+            engine.inputNode.removeTap(onBus: 0)
+            hasInstalledTap = false
+        }
         engine.stop()
         engine.reset()
+        dsp = nil
+        hasPrimedDSP = false
     }
 
     private func scheduleRestart(reason: String, delay: TimeInterval = 0.5) {
@@ -120,23 +133,23 @@ final class AudioInputMeter {
     private func restartAudioInput(reason: String) {
         guard !isRestarting else { return }
         isRestarting = true
-        updateState(decibels: -128, statusText: reason, isReceivingAudio: false)
+        defer { isRestarting = false }
 
-        stopEngine()
+        updateState(decibels: -128, statusText: reason, isReceivingAudio: false)
 
         do {
             try startEngine()
         } catch {
             updateState(decibels: -128, statusText: "Mic error", isReceivingAudio: false)
         }
-
-        isRestarting = false
     }
 
     private func startHealthCheckTimer() {
         healthCheckTimer?.invalidate()
-        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: inputStallTimeout, repeats: true) { [weak self] _ in
-            self?.restartIfInputStalled()
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: inputStallTimeout, repeats: true) { _ in
+            Task { @MainActor [weak self] in
+                self?.restartIfInputStalled()
+            }
         }
     }
 
@@ -187,14 +200,11 @@ final class AudioInputMeter {
         }
         let estimatedSPL = rawDecibels + calibrationOffsetDecibels
 
-        Task { @MainActor [weak state] in
-            state?.decibels = estimatedSPL
-            state?.isReceivingAudio = true
-            state?.statusText = "Listening"
-        }
+        state.decibels = estimatedSPL
+        state.isReceivingAudio = true
+        state.statusText = "Listening"
     }
 
-    @MainActor
     private func updateState(
         decibels: Float? = nil,
         statusText: String,
